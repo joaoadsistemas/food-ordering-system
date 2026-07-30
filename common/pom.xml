@@ -8,6 +8,7 @@
     </parent>
 
     <artifactId>common</artifactId>
+    <packaging>pom</packaging>
 
     <modules>
         <module>common-domain</module>
