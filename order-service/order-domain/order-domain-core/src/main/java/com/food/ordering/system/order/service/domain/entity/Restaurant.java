@@ -36,8 +36,8 @@ public class Restaurant extends AggregateRoot<RestaurantId> {
             return new Builder();
         }
 
-        public Builder id(RestaurantId val) {
-            restaurantId = val;
+        public Builder restaurantId(RestaurantId restaurantId) {
+            this.restaurantId = restaurantId;
             return this;
         }
 
