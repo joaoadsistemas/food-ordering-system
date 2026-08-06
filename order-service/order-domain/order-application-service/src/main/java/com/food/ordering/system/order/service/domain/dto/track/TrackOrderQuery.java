@@ -13,6 +13,6 @@ import java.util.UUID;
 public class TrackOrderQuery {
 
     @NotNull
-    private final UUID orderTackingId;
+    private final UUID orderTrackingId;
 
 }
