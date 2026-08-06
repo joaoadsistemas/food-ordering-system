@@ -68,7 +68,7 @@ public class OrderItem extends BaseEntity<OrderItemId> {
             return new Builder();
         }
 
-        public Builder id(OrderItemId val) {
+        public Builder orderItemId(OrderItemId val) {
             orderItemId = val;
             return this;
         }

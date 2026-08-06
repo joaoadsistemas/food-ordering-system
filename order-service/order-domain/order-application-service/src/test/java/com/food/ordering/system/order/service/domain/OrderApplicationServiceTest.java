@@ -5,16 +5,22 @@ import com.food.ordering.system.order.service.domain.dto.create.CreateOrderComma
 import com.food.ordering.system.order.service.domain.dto.create.CreateOrderResponse;
 import com.food.ordering.system.order.service.domain.dto.create.OrderAddress;
 import com.food.ordering.system.order.service.domain.dto.create.OrderItem;
+import com.food.ordering.system.order.service.domain.dto.track.TrackOrderQuery;
+import com.food.ordering.system.order.service.domain.dto.track.TrackOrderResponse;
 import com.food.ordering.system.order.service.domain.entity.Customer;
 import com.food.ordering.system.order.service.domain.entity.Order;
 import com.food.ordering.system.order.service.domain.entity.Product;
 import com.food.ordering.system.order.service.domain.entity.Restaurant;
 import com.food.ordering.system.order.service.domain.exception.OrderDomainException;
+import com.food.ordering.system.order.service.domain.exception.OrderNotFoundException;
 import com.food.ordering.system.order.service.domain.mapper.OrderDataMapper;
 import com.food.ordering.system.order.service.domain.ports.input.service.OrderApplicationService;
 import com.food.ordering.system.order.service.domain.ports.output.repository.CustomerRepository;
 import com.food.ordering.system.order.service.domain.ports.output.repository.OrderRepository;
 import com.food.ordering.system.order.service.domain.ports.output.repository.RestaurantRepository;
+import com.food.ordering.system.order.service.domain.valueObject.OrderItemId;
+import com.food.ordering.system.order.service.domain.valueObject.StreetAddress;
+import com.food.ordering.system.order.service.domain.valueObject.TrackingId;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -53,6 +59,12 @@ public class OrderApplicationServiceTest {
     private final UUID PRODUCT_ID = UUID.fromString("399435ef-7d59-4683-9ed5-f555f90d8a6a");
     private final UUID ORDER_ID = UUID.fromString("402cb1a8-2861-452e-9031-bf2aa2ed867b");
     private final BigDecimal PRICE = new BigDecimal("200.00");
+
+    private TrackOrderQuery trackOrderQuery;
+    private final UUID TRACK_ORDER_ID = UUID.fromString("6ca94e66-1036-4e4f-a32a-6033edc9eb14");
+    private final UUID STREET_ID = UUID.fromString("6ca94e66-1036-4e4f-a32a-6033edc9eb14");
+    private final Long ORDER_ITEM_ID = 1L;
+    private TrackOrderResponse trackOrderResponse;
 
     @BeforeAll
     public void init() {
@@ -145,6 +157,51 @@ public class OrderApplicationServiceTest {
         when(restaurantRepository.findRestaurantInformation(orderDataMapper.createOrderCommandToRestaurant(createOrderCommand)))
                 .thenReturn(Optional.of(restaurantResponse));
         when(orderRepository.save(any(Order.class))).thenReturn(order);
+
+
+        // TRACK ORDER
+        trackOrderQuery = TrackOrderQuery.builder()
+                .orderTrackingId(TRACK_ORDER_ID)
+                .build();
+
+        trackOrderResponse = TrackOrderResponse.builder()
+                .orderTrackingId(TRACK_ORDER_ID)
+                .failureMessages(List.of())
+                .orderStatus(OrderStatus.PAID)
+                .build();
+
+        Order orderTrack = Order.Builder.builder()
+                .orderId(new OrderId(ORDER_ID))
+                .customerId(new CustomerId(CUSTOMER_ID))
+                .restaurantId(new RestaurantId(RESTAURANT_ID))
+                .deliveryAddress(new StreetAddress(
+                        STREET_ID,
+                        "street",
+                        "000",
+                        "city"
+                ))
+                .price(new Money(PRICE))
+                .items(List.of(com.food.ordering.system.order.service.domain.entity.OrderItem.Builder.builder()
+                                        .orderItemId(new OrderItemId(ORDER_ITEM_ID))
+                                        .orderId(new OrderId(ORDER_ID))
+                                .quantity(1)
+                                .price(new Money(new BigDecimal(50)))
+                                .subTotal(new Money(new BigDecimal(50)))
+                                .build(),
+                        com.food.ordering.system.order.service.domain.entity.OrderItem.Builder.builder()
+                                .orderItemId(new OrderItemId(ORDER_ITEM_ID))
+                                .orderId(new OrderId(ORDER_ID))
+                                .quantity(2)
+                                .price(new Money(new BigDecimal(50)))
+                                .subTotal(new Money(new BigDecimal(100)))
+                                .build()
+                ))
+                .trackingId(new TrackingId(TRACK_ORDER_ID))
+                .orderStatus(OrderStatus.PAID)
+                .failureMessages(List.of())
+                .build();
+
+        when(orderRepository.findByTrackingId(new TrackingId(TRACK_ORDER_ID))).thenReturn(Optional.of(orderTrack));
     }
 
     @Test
@@ -152,7 +209,7 @@ public class OrderApplicationServiceTest {
         CreateOrderResponse createOrderResponse = orderApplicationService.createOrder(createOrderCommand);
         assertEquals(OrderStatus.PENDING, createOrderResponse.getOrderStatus());
         assertEquals("Order created successfully", createOrderResponse.getMessage());
-        assertNotNull(createOrderResponse.getOrderTackingId());
+        assertNotNull(createOrderResponse.getOrderTrackingId());
     }
 
     @Test
@@ -186,6 +243,21 @@ public class OrderApplicationServiceTest {
         assertEquals("Restaurant with id " + RESTAURANT_ID + " is currently not active!",
                 orderDomainException.getMessage());
 
+    }
+
+    @Test
+    void testTrackOrderQueryWithValidId() {
+        TrackOrderResponse newTrackOrderResponse = orderApplicationService.trackOrder(trackOrderQuery);
+        assertEquals(trackOrderResponse.getOrderTrackingId(), newTrackOrderResponse.getOrderTrackingId());
+        assertEquals(List.of(), newTrackOrderResponse.getFailureMessages());
+        assertEquals(TRACK_ORDER_ID, newTrackOrderResponse.getOrderTrackingId());
+    }
+
+    @Test
+    void testTrackOrderQueryWithInvalidId() {
+        when(orderRepository.findByTrackingId(any())).thenReturn(Optional.empty());
+        OrderNotFoundException orderNotFoundException = assertThrows(OrderNotFoundException.class, () -> orderApplicationService.trackOrder(trackOrderQuery));
+        assertEquals("Could not find order with tracking id: " + TRACK_ORDER_ID, orderNotFoundException.getMessage());
     }
 
 }
