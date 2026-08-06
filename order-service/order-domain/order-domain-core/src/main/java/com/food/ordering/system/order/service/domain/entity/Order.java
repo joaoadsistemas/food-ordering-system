@@ -23,6 +23,8 @@ public class Order extends AggregateRoot<OrderId> {
     private OrderStatus orderStatus;
     private List<String> failureMessages;
 
+    private OrderPreferences orderPreferences;
+
     public void initializeOrder() {
         super.setId(new OrderId(UUID.randomUUID()));
         trackingId = new TrackingId(UUID.randomUUID());
@@ -71,6 +73,10 @@ public class Order extends AggregateRoot<OrderId> {
         }
         orderStatus = OrderStatus.CANCELLED;
         updateFailureMessages(failureMessages);
+    }
+
+    public void updateOrderPreferences(OrderPreferences preferences) {
+        this.orderPreferences = preferences;
     }
 
     private void updateFailureMessages(List<String> failureMessages) {
@@ -124,6 +130,7 @@ public class Order extends AggregateRoot<OrderId> {
         trackingId = builder.trackingId;
         orderStatus = builder.orderStatus;
         failureMessages = builder.failureMessages;
+        orderPreferences = builder.orderPreferences;
     }
 
 
@@ -159,6 +166,10 @@ public class Order extends AggregateRoot<OrderId> {
         return failureMessages;
     }
 
+    public OrderPreferences getOrderPreferences() {
+        return orderPreferences;
+    }
+
     public static final class Builder {
         private OrderId orderId;
         private CustomerId customerId;
@@ -169,6 +180,7 @@ public class Order extends AggregateRoot<OrderId> {
         private TrackingId trackingId;
         private OrderStatus orderStatus;
         private List<String> failureMessages;
+        private OrderPreferences orderPreferences;
 
         private Builder() {
         }
@@ -219,6 +231,11 @@ public class Order extends AggregateRoot<OrderId> {
 
         public Builder failureMessages(List<String> val) {
             failureMessages = val;
+            return this;
+        }
+
+        public Builder orderPreferences(OrderPreferences val) {
+            orderPreferences = val;
             return this;
         }
 

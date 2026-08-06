@@ -1,341 +1,457 @@
-# Food Ordering System
+# Food Ordering System — Aula: DDD + Arquitetura Hexagonal na prática
 
-## Visão geral
-
-Este repositório contém o microsserviço `order-service` de um sistema de pedidos de comida. Ele está organizado como um projeto **Maven multi-módulo** e segue a **Arquitetura Hexagonal (Ports and Adapters)**.
-
-O objetivo arquitetural é manter o domínio de pedidos isolado de qualquer tecnologia externa, como HTTP, banco de dados, mensageria ou frameworks. O domínio define *o que* o sistema faz; os adaptadores definem *como* ele conversa com o mundo externo.
-
-> **Estado atual (resumo):**
-> - A base da arquitetura está montada e os módulos Maven estão estruturados.
-> - O módulo compartilhado `common-domain` já possui as abstrações base (entidades, identificadores, value objects, exceções e eventos).
-> - O núcleo do domínio de pedidos (`order-domain-core`) já possui as entidades principais (`Order`, `OrderItem`, `Product`) e as primeiras regras de negócio de validação de preço.
-> - Os outros módulos (`order-application-service`, `order-application`, `order-data-access`, `order-messaging` e `order-container`) ainda estão vazios, contendo apenas os arquivos gerados por archetype.
-> - O projeto ainda **não compila** por um problema no `common/pom.xml`, descrito na seção de problemas conhecidos.
+> Este README foi reescrito como um **guia didático**, não como documentação de status de projeto. A ideia é que você consiga ler de cima para baixo e entender **por que** cada peça existe, **o que** ela faz e **como** elas se encaixam — usando o código real deste repositório como exemplo, e usando como fio condutor o `POST /orders` que você testou no Postman/Insomnia.
 
 ---
 
-## Tecnologias e requisitos
+## 0. O que esta aplicação realmente é hoje
 
-- **Java 21**
-- **Maven**
-- **Spring Boot 3.2.2** (herdado do `pom.xml` raiz)
-- **Arquitetura Hexagonal**
+Antes de qualquer conceito, um alinhamento de expectativas importante — porque isso explica sua sensação de "abstrato":
+
+Este repositório implementa, até agora, **apenas duas fatias do hexágono**:
+
+1. `order-domain-core` → o **domínio puro** (as regras de negócio do pedido, sem framework nenhum).
+2. `order-application-service` → a **camada de aplicação** (os casos de uso que orquestram o domínio) — incluindo as **portas** (interfaces) que os adaptadores externos deveriam implementar.
+
+Os módulos que fariam a aplicação **rodar de verdade** ainda são só esqueletos gerados por `maven-archetype` (só têm `App.java`/`AppTest.java` de exemplo, sem nenhuma linha de código real):
+
+- `order-application` → seria o adaptador **REST** (os `@RestController`).
+- `order-data-access` → seria o adaptador de **persistência** (JPA + banco de dados).
+- `order-messaging` → seria o adaptador de **mensageria** (Kafka).
+- `order-container` → seria o módulo Spring Boot que **liga tudo** (o `main()`).
+
+**Isso explica o print que você me mandou.** O `POST http://localhost:8181/orders` com aquele JSON é o request que a aplicação **vai aceitar quando `order-application` e `order-container` existirem** — hoje, se você rodasse esse projeto, não haveria nenhum servidor HTTP escutando na porta 8181, porque o `order-container` (quem sobe o Spring Boot) está vazio. É por isso que a aplicação é "falsa"/simulada neste momento: **a regra de negócio já existe e já pode ser testada isoladamente (com testes unitários, sem HTTP e sem banco), mas o "fio elétrico" que liga o mundo externo a essa regra ainda não foi implementado.**
+
+Isso, aliás, **não é um defeito** — é a essência da Arquitetura Hexagonal: você consegue construir e validar 100% da regra de negócio antes mesmo de decidir se vai expor ela via REST, gRPC, mensageria, ou CLI. O curso do Ali Gelenler propositalmente começa pelo centro (domínio) e vai construindo os adaptadores por fora, módulo a módulo.
+
+Com isso em mente, vamos aos conceitos.
 
 ---
 
-## Estrutura do projeto
+## 1. DDD (Domain-Driven Design) em poucas palavras
+
+DDD é uma forma de desenhar software onde o **código reflete a linguagem e as regras do negócio** (o "domínio"), em vez de refletir tabelas de banco de dados ou frameworks. Os blocos de construção ("tactical patterns") que aparecem neste projeto são:
+
+- **Entity (Entidade):** um objeto que tem **identidade própria** (um ID) que persiste ao longo do tempo, mesmo que seus atributos mudem. Ex.: `OrderItem`, `Product`.
+- **Value Object (Objeto de Valor):** um objeto que **não tem identidade**, é definido inteiramente pelos seus atributos, e normalmente é imutável. Dois VOs com os mesmos valores são "iguais". Ex.: `Money`, `StreetAddress`, `TrackingId`, `CustomerId`.
+- **Aggregate (Agregado) / Aggregate Root (Raiz do Agregado):** um conjunto de entidades e VOs tratados como uma **unidade de consistência**. Só a raiz do agregado é acessível de fora; ela garante que as regras internas nunca fiquem em estado inválido. Ex.: `Order` é a raiz; `OrderItem` só existe dentro de um `Order`.
+- **Domain Service (Serviço de Domínio):** uma regra de negócio que **não pertence naturalmente a uma única entidade**, geralmente porque envolve mais de um agregado (ex.: `Order` + `Restaurant`). Ex.: `OrderDomainService`.
+- **Domain Event (Evento de Domínio):** um fato imutável que aconteceu no domínio ("o pedido foi criado", "o pedido foi pago"). Ex.: `OrderCreatedEvent`, `OrderPaidEvent`, `OrderCancelledEvent`.
+- **Repository (Repositório):** uma abstração para carregar/persistir agregados, **sem expor detalhes de banco de dados** para o domínio. Ex.: `OrderRepository`.
+- **Application Service (Serviço de Aplicação):** orquestra um caso de uso (ex.: "criar pedido"), chamando repositórios, serviços de domínio e publicadores de eventos — mas **sem conter regra de negócio**. Ex.: `OrderApplicationService`.
+
+A diferença mais importante para fixar: **Domain Service tem regra de negócio. Application Service não tem regra de negócio, só orquestra.**
+
+---
+
+## 2. Arquitetura Hexagonal (Ports & Adapters) em poucas palavras
+
+A ideia central: o **domínio fica no centro** e não conhece nada do mundo externo (HTTP, banco, Kafka, frameworks). Tudo que o domínio precisa do mundo externo (persistir um pedido, publicar um evento) é declarado como uma **interface** — chamada de **porta** — definida *dentro* da camada de aplicação/domínio.
+
+Quem implementa essa interface é um **adaptador**, que fica *fora*, em outro módulo Maven:
+
+```text
+                     MUNDO EXTERNO
+       ┌────────────────────┬────────────────────┐
+       │ Adaptador de       │  Adaptadores de     │
+       │ entrada (driving)  │  saída (driven)     │
+       │ order-application  │  order-data-access  │
+       │  (REST controller) │  order-messaging     │
+       └─────────┬──────────┴──────────┬──────────┘
+                  │ chama                │ implementa
+                  ▼                      │
+          PORTA DE ENTRADA        PORTA DE SAÍDA
+      OrderApplicationService   OrderRepository,
+                  │             OrderCreatedPaymentRequestMessagePublisher...
+                  ▼                      ▲
+            order-application-service ───┘
+             (casos de uso / orquestração)
+                  │
+                  ▼
+             order-domain-core
+          (regras de negócio puras)
+```
+
+Duas categorias de porta neste projeto:
+
+- **Portas de entrada** (quem chama o domínio de fora): `OrderApplicationService`, `PaymentResponseMessageListener`, `RestaurantApprovalResponseListener` — ficam em `.../ports/input/...`.
+- **Portas de saída** (o que o domínio precisa do mundo externo): `OrderRepository`, `CustomerRepository`, `RestaurantRepository`, `OrderCreatedPaymentRequestMessagePublisher`, `OrderCancelledPaymentRequestMessagePublisher`, `OrderPaidRestaurantRequestMessagePublisher` — ficam em `.../ports/output/...`.
+
+**Regra de ouro:** a seta de dependência do código sempre aponta **para dentro**. `order-data-access` pode depender de `order-application-service` (para implementar `OrderRepository`), mas `order-application-service` **jamais** pode depender de `order-data-access`. Isso é o que te permite trocar Postgres por MongoDB, ou Kafka por RabbitMQ, sem tocar uma linha da regra de negócio.
+
+---
+
+## 3. Estrutura de módulos Maven e o que cada um representa no hexágono
 
 ```text
 food-ordering-system/
-├── pom.xml                              # POM raiz: agrupa order-service e common
+├── pom.xml                                # POM raiz (agrupa "common" e "order-service")
 ├── common/
-│   ├── pom.xml                          # Agrupador de módulos comuns
-│   └── common-domain/
-│       └── src/main/java/.../domain/   # Base reutilizável do domínio
-├── order-service/
-│   ├── pom.xml                          # Agrupador do serviço de pedidos
-│   ├── order-domain/
-│   │   ├── pom.xml
-│   │   ├── order-domain-core/           # Regras do pedido (AGREGADO Order)
-│   │   └── order-application-service/   # Casos de uso e portas (vazio)
-│   ├── order-application/               # Adaptadores de entrada REST (vazio)
-│   ├── order-data-access/               # Adaptadores de saída: persistência (vazio)
-│   ├── order-messaging/                 # Adaptadores de saída: mensageria (vazio)
-│   └── order-container/                 # Composição e inicialização (vazio)
+│   └── common-domain/                     # Blocos de DDD reutilizáveis por qualquer serviço
+└── order-service/
+    ├── order-domain/
+    │   ├── order-domain-core/             # ★ DOMÍNIO do pedido (regras puras) — IMPLEMENTADO
+    │   └── order-application-service/     # ★ CASOS DE USO + PORTAS               — IMPLEMENTADO
+    ├── order-application/                 # Adaptador de entrada REST             — vazio (esqueleto)
+    ├── order-data-access/                 # Adaptador de saída (JPA/DB)           — vazio (esqueleto)
+    ├── order-messaging/                   # Adaptador de saída (Kafka)            — vazio (esqueleto)
+    └── order-container/                   # Módulo Spring Boot que liga tudo      — vazio (esqueleto)
 ```
 
----
+### `common-domain` (`common/common-domain`)
 
-## Responsabilidade de cada módulo
+Não depende de Spring, JPA ou nada externo — é Java puro. Contém as abstrações genéricas de DDD que **qualquer** microsserviço do sistema (order, payment, restaurant, customer...) vai reaproveitar:
 
-### `common-domain`
-
-Módulo compartilhado entre todos os serviços do sistema. Contém abstrações genéricas do Domain-Driven Design (DDD):
-
-- **`BaseEntity<ID>`** (`com.food.ordering.system.domain.entity`): classe base para qualquer entidade com identidade.
-- **`AggregateRoot<ID>`** (`com.food.ordering.system.domain.entity`): marca uma entidade como raiz de agregado. No DDD, a raiz controla a consistência de todo o agregado.
-- **`BaseId<T>`** (`com.food.ordering.system.domain.valueObject`): classe base imutável para identificadores tipados.
-- **Value objects comuns** (`com.food.ordering.system.domain.valueObject`):
-  - `Money`: representa valores monetários com `BigDecimal`, garantindo precisão e operações seguras.
-  - `CustomerId`, `OrderId`, `ProductId`, `RestaurantId`: identificadores tipados baseados em `UUID`.
-  - `OrderStatus`: enumeração dos estados do pedido (`PENDING`, `PAID`, `APPROVED`, `CANCELLING`, `CANCELLED`).
-- **`DomainException`** (`com.food.ordering.system.domain.exception`): classe base para exceções de domínio.
-- **`DomainEvent<T>`** (`com.food.ordering.system.domain.event`): interface base para eventos de domínio (ainda vazia, servindo de contrato futuro).
-
-> Este módulo não depende de Spring, banco de dados, HTTP ou Kafka. É puro Java.
+- `com.food.ordering.system.domain.entity.BaseEntity<ID>` — classe-base de qualquer Entity: guarda um `id` e define `equals`/`hashCode` **baseados no ID**, não nos atributos (isso é a diferença fundamental entre Entity e Value Object).
+- `com.food.ordering.system.domain.entity.AggregateRoot<ID>` — apenas marca semanticamente que uma classe é raiz de agregado (hoje é um `extends BaseEntity` vazio, mas comunica intenção).
+- `com.food.ordering.system.domain.valueObject.BaseId<T>` — classe-base para IDs tipados e imutáveis (em vez de passar `UUID` cru por todo o sistema, você cria `OrderId`, `CustomerId`, `RestaurantId`, `ProductId`, cada um "carimbado" com seu próprio tipo — isso evita, por exemplo, passar um `RestaurantId` onde se esperava um `CustomerId`, erro que o compilador pegaria).
+- `Money` — Value Object que encapsula `BigDecimal` e centraliza as regras de dinheiro (soma, subtração, multiplicação, arredondamento com `RoundingMode.HALF_EVEN`, comparação "maior que zero"). Isso evita que a lógica de arredondamento fique espalhada pelo código.
+- `OrderStatus` (`PENDING, PAID, APPROVED, CANCELLING, CANCELLED`), `PaymentStatus` (`COMPLETED, CANCELLED, FAILED`), `OrderApprovalStatus` (`APPROVED, REJECTED`) — enums que representam os estados possíveis das máquinas de estado do sistema.
+- `com.food.ordering.system.domain.exception.DomainException` — exceção-base para violações de regra de negócio (sem depender de HTTP; quem traduzir isso para um `400 Bad Request` será o adaptador REST, futuramente).
+- `com.food.ordering.system.domain.event.DomainEvent<T>` — marker interface para eventos de domínio.
+- `com.food.ordering.system.domain.event.publisher.DomainEventPublisher<T>` — porta de saída genérica: `void publish(T domainEvent)`. Cada publicador específico (pagamento, aprovação do restaurante) estende essa interface.
 
 ### `order-domain-core`
 
-É o núcleo do domínio do serviço de pedidos. Já implementa o agregado `Order` e suas entidades filhas.
-
-- **Entidades** (`com.food.ordering.system.order.service.domain.entity`):
-  - `Order`: raiz do agregado. Contém `customerId`, `restaurantId`, `deliveryAddress`, `price`, `items`, `trackingId`, `orderStatus` e `failureMessages`.
-  - `OrderItem`: item de um pedido. Contém `product`, `quantity`, `price` e `subTotal`.
-  - `Product`: representa um produto vinculado a um item.
-- **Value objects específicos** (`com.food.ordering.system.order.service.domain.valueObject`):
-  - `StreetAddress`: endereço de entrega (`street`, `postalCode`, `city`).
-  - `TrackingId`: identificador de rastreamento do pedido.
-  - `OrderItemId`: identificador sequencial de um item dentro do pedido.
-- **Exceção de domínio** (`com.food.ordering.system.order.service.domain.exception`):
-  - `OrderDomainException`: sinaliza violações nas regras de negócio do pedido.
+O coração do microsserviço de pedidos — regras de negócio, zero dependência de framework. Detalhado na seção 4.
 
 ### `order-application-service`
 
-Ainda vazio. Deverá conter:
+Os casos de uso ("criar pedido", "rastrear pedido") e as portas de entrada/saída específicas do domínio de pedidos. Detalhado na seção 5.
 
-- Os casos de uso do sistema (por exemplo, *criar pedido*, *pagar pedido*, *cancelar pedido*).
-- Os **ports** (portas) de entrada, que os adaptadores de entrada chamam.
-- Os **ports** de saída, que o domínio e a aplicação usam para persistência e publicação de eventos.
-- DTOs de comando e resposta.
-- A coordenação entre domínio e adaptadores.
+### `order-application`, `order-data-access`, `order-messaging`, `order-container`
 
-### `order-application`
+Ainda são esqueletos de archetype Maven (sem código de produção). São os adaptadores que, quando implementados, vão:
 
-Ainda vazio. Será o adaptador de entrada, provavelmente REST:
-
-- Controllers Spring.
-- DTOs de requisição e resposta.
-- Mapeadores entre DTOs e comandos da aplicação.
-- Tratamento global de erros HTTP.
-
-### `order-data-access`
-
-Ainda vazio. Será o adaptador de saída para persistência:
-
-- Implementações das portas de persistência definidas em `order-application-service`.
-- Entidades JPA, repositórios e mapeadores entre modelos de persistência e domínio.
-- Integração com banco de dados relacional.
-
-### `order-messaging`
-
-Ainda vazio. Será o adaptador de saída para mensageria:
-
-- Implementações das portas de publicação de eventos.
-- Serialização e desserialização de mensagens.
-- Integração com o broker de eventos (por exemplo, Kafka).
-
-### `order-container`
-
-Ainda vazio. Será o módulo de composição:
-
-- Aplicação Spring Boot principal.
-- Configuração de beans que ligam as portas às implementações concretas.
-- Une todos os adaptadores ao núcleo da aplicação.
+- `order-application`: expor o `POST /orders` (e `GET /orders/{trackingId}`) via `@RestController`, receber o JSON do Postman, validar formato e converter em `CreateOrderCommand`.
+- `order-data-access`: implementar `OrderRepository`, `CustomerRepository`, `RestaurantRepository` usando JPA/Postgres.
+- `order-messaging`: implementar `OrderCreatedPaymentRequestMessagePublisher` (e os demais publishers) usando Kafka, e também os `@KafkaListener` que chamam `PaymentResponseMessageListener`/`RestaurantApprovalResponseListener`.
+- `order-container`: ter a classe `@SpringBootApplication` e o `application.yml` (porta 8181, datasource, kafka brokers etc.), além dos `@Bean`/`@Configuration` que "casam" cada porta com seu adaptador concreto.
 
 ---
 
-## Grafo de dependências Maven
+## 4. O domínio (`order-domain-core`) em detalhe
 
-```text
-food-ordering-system
-├── common
-│   └── common-domain
-└── order-service
-    ├── order-domain
-    │   ├── order-domain-core ──> common-domain
-    │   └── order-application-service ──> order-domain-core
-    ├── order-application ──────────────> order-application-service
-    ├── order-data-access ───────────────> order-application-service
-    ├── order-messaging ─────────────────> order-application-service
-    └── order-container ─────────────────> order-domain-core
-                                          order-application-service
-                                          order-application
-                                          order-data-access
-                                          order-messaging
-```
+### 4.1. O agregado `Order`
 
-A seta significa “depende de”. As dependências apontam para dentro:
-
-- `order-domain-core` é a camada mais interna.
-- `order-application-service` usa o domínio para executar casos de uso.
-- `order-application`, `order-data-access` e `order-messaging` são adaptadores externos.
-- `order-container` conhece todos os componentes para realizar a composição.
-- O domínio não depende de infraestrutura.
-
----
-
-## Como a Arquitetura Hexagonal se aplica
-
-```text
-                         MUNDO EXTERNO
-                               │
-             ┌─────────────────┴─────────────────┐
-             │                                   │
-      Adaptador de entrada                 Adaptadores de saída
-       order-application             data-access / messaging
-             │                                   ▲
-             │ chama                             │ implementam
-             ▼                                   │
-    Porta de entrada                     Portas de saída
-             │                                   ▲
-             └──────────────┐    ┌───────────────┘
-                            ▼    │
-                  order-application-service
-                            │
-                            ▼
-                   order-domain-core
-```
-
-As dependências de código apontam para dentro:
-
-- **Porta**: abstração definida pelo lado interno (aplicação ou domínio).
-- **Adaptador**: implementação externa de uma porta ou ponto de entrada no sistema.
-
-Se uma classe de domínio precisar importar algo de banco, controller ou broker, a dependência está invertida. A solução é extrair uma porta no lado interno e fazer o adaptador implementá-la.
-
----
-
-## O que já funciona no domínio
-
-### Agregado `Order`
-
-A classe `Order` (`@/Users/joaoadsistemas/Documents/GitHub/food-ordering-system/order-service/order-domain/order-domain-core/src/main/java/com/food/ordering/system/order/service/domain/entity/Order.java`) é a raiz do agregado. Ela já possui:
-
-- **Inicialização do pedido** (`initializeOrder()`):
-  - Gera um `OrderId` aleatório com `UUID`.
-  - Gera um `TrackingId` para rastreamento.
-  - Define o status como `PENDING`.
-  - Inicializa a lista de mensagens de falha.
-  - Atribui IDs sequenciais aos itens do pedido.
-
-- **Validação do pedido** (`validateOrder()`):
-  - Garante que o pedido ainda não foi inicializado (`orderStatus` e `id` devem ser nulos).
-  - Garante que o preço total é maior que zero.
-  - Garante que a soma dos subtotais dos itens é igual ao preço total do pedido.
-
-- **Validação de preço do item** (`validateItemPrice`):
-  - Cada item é validado por `OrderItem.isPriceValid()`, que verifica:
-    - O preço é maior que zero.
-    - O preço do item é igual ao preço do produto.
-    - `price × quantity` é igual ao `subTotal`.
-
-### Exemplo de uso do `Builder`
+`Order extends AggregateRoot<OrderId>` (`order-service/order-domain/order-domain-core/.../entity/Order.java`). Campos:
 
 ```java
-Order order = Order.builder()
-        .customerId(new CustomerId(UUID.randomUUID()))
-        .restaurantId(new RestaurantId(UUID.randomUUID()))
-        .deliveryAddress(new StreetAddress(UUID.randomUUID(), "Rua A", "12345", "Cidade"))
-        .price(new Money(new BigDecimal("100.00")))
-        .items(List.of(
-                OrderItem.builder()
-                        .product(new Product(new ProductId(UUID.randomUUID()), "Pizza", new Money(new BigDecimal("50.00"))))
-                        .quantity(2)
-                        .price(new Money(new BigDecimal("50.00")))
-                        .subTotal(new Money(new BigDecimal("100.00")))
-                        .build()
-        ))
-        .build();
+private final CustomerId customerId;
+private final RestaurantId restaurantId;
+private final StreetAddress deliveryAddress;
+private final Money price;
+private final List<OrderItem> items;
 
-order.initializeOrder();
-order.validateOrder();
+private TrackingId trackingId;
+private OrderStatus orderStatus;
+private List<String> failureMessages;
 ```
 
-Esse design torna o domínio testável sem banco de dados, sem Spring e sem HTTP.
+Repare: `customerId` e `restaurantId` **não são as entidades inteiras**, são só os IDs. Isso é uma regra clássica de DDD: **um agregado não guarda referência direta a outro agregado**, só ao seu ID. `Order` não conhece o `Customer` nem o `Restaurant` completos — só sabe "a quem" e "de qual restaurante" pertence.
+
+A máquina de estados do pedido, implementada como métodos do próprio agregado (isso é "comportamento rico", em oposição a um DTO anêmico que só tem getters/setters):
+
+| Método | Transição válida | O que faz |
+|---|---|---|
+| `initializeOrder()` | (novo) | Gera `OrderId` e `TrackingId` aleatórios, status vira `PENDING`, zera `failureMessages`, atribui IDs sequenciais aos `OrderItem` |
+| `validateOrder()` | antes de `initializeOrder()` | Valida que o pedido ainda não foi inicializado, que o preço total é > 0, e que a soma dos subtotais dos itens bate com o preço total |
+| `pay()` | `PENDING` → `PAID` | Lança `OrderDomainException` se o status não for `PENDING` |
+| `approve()` | `PAID` → `APPROVED` | Lança exceção se não estiver `PAID` |
+| `initCancel(failureMessages)` | `PAID` → `CANCELLING` | Início do cancelamento (aguardando estorno do pagamento) |
+| `cancel(failureMessages)` | `CANCELLING` ou `PENDING` → `CANCELLED` | Cancelamento definitivo |
+
+Note que essas transições **só existem dentro do agregado** — nenhuma classe externa consegue, por exemplo, colocar um pedido direto em `APPROVED` sem passar por `PAID`. É o agregado protegendo suas próprias invariantes.
+
+### 4.2. `OrderItem` (Entity, não Aggregate Root)
+
+`OrderItem extends BaseEntity<OrderItemId>` — tem identidade própria (`OrderItemId`), mas só existe **dentro** do agregado `Order` (por isso não é `AggregateRoot`). Contém `product`, `quantity`, `price`, `subTotal`, e o método de validação:
+
+```java
+protected boolean isPriceValid() {
+    return price.isGreaterThanZero() &&
+            price.equals(product.getPrice()) &&
+            price.multiply(quantity).equals(subTotal);
+}
+```
+
+Ou seja: o preço do item precisa bater com o preço **atual do produto** (que vem do restaurante — veja 4.4), e `price × quantity` precisa bater com o `subTotal` enviado.
+
+### 4.3. Value Objects específicos do pedido
+
+- `StreetAddress` (`street`, `postalCode`, `city`) — Value Object clássico: `equals`/`hashCode` comparam os **valores**, não uma identidade.
+- `TrackingId` — o ID público que o cliente final usa para rastrear o pedido (diferente do `OrderId` interno).
+- `OrderItemId` — ID sequencial (1, 2, 3...) atribuído a cada item quando o pedido é inicializado.
+
+### 4.4. `Restaurant`, `Product`, `Customer`
+
+- `Restaurant extends AggregateRoot<RestaurantId>` — tem uma lista de `Product` e um flag `active`.
+- `Product extends BaseEntity<ProductId>` — tem `name` e `price`, com o método `updateWithConfirmedNameAndPrice(...)`.
+- `Customer extends AggregateRoot<CustomerId>` — hoje é só um "casco" (sem atributos), pois `order-domain-core` só precisa **confirmar que o cliente existe**, não precisa saber seu nome/e-mail.
+
+### 4.5. `OrderDomainService` — a regra que cruza dois agregados
+
+```java
+public interface OrderDomainService {
+    OrderCreatedEvent validateAndInitiateOrder(Order order, Restaurant restaurant);
+    OrderPaidEvent payOrder(Order order);
+    void approveOrder(Order order);
+    OrderCancelledEvent cancelOrderPayment(Order order, List<String> failureMessages);
+    void cancelOrder(Order order, List<String> failureMessages);
+}
+```
+
+Por que isso não é um método do próprio `Order`? Porque `validateAndInitiateOrder` precisa **do `Restaurant`** também — e um agregado não deveria depender de outro diretamente. Essa é a razão de existir de um **Domain Service**: coordenar regra de negócio que atravessa mais de um agregado.
+
+`OrderDomainServiceImpl.validateAndInitiateOrder(order, restaurant)` faz, em ordem:
+
+1. `validateRestaurant(restaurant)` → lança `OrderDomainException` se `!restaurant.isActive()`.
+2. `setOrderProductInformation(order, restaurant)` → para cada item do pedido, procura o produto correspondente na lista de produtos do restaurante (usando `equals`, que compara só o `ProductId`, herdado de `BaseEntity`) e **sobrescreve nome e preço do produto do pedido com os dados "oficiais" do restaurante**. Isso é uma proteção importante: o cliente manda um `price` no JSON, mas quem manda de verdade no preço é o restaurante — o pedido nunca deveria confiar cegamente no preço que veio de fora.
+3. `order.validateOrder()` → valida preço total vs. soma dos itens (usando os preços já corrigidos no passo 2).
+4. `order.initializeOrder()` → gera IDs e coloca `PENDING`.
+5. Retorna um `OrderCreatedEvent(order, timestamp)`.
+
+**Ponto de atenção pedagógico:** para o passo 2 funcionar, o `Restaurant` reconstruído a partir do `CreateOrderCommand` precisa conter, na lista de produtos, um `Product` com o **mesmo `ProductId`** de cada item do pedido — é isso que a porta `RestaurantRepository.findRestaurantInformation(restaurant)` deveria devolver (ver seção 5.4).
 
 ---
 
-## Fluxo esperado: criação de um pedido
+## 5. A camada de aplicação (`order-application-service`) em detalhe
 
-Quando os adaptadores forem implementados, o fluxo será:
+Esta é a camada que **orquestra** o domínio para realizar casos de uso. Ela não decide regra de negócio — ela decide **a sequência de passos**.
 
-1. O cliente envia uma requisição HTTP para `order-application`.
-2. O controller valida o formato e converte o DTO em um comando.
-3. O controller chama a porta de entrada em `order-application-service`.
-4. O serviço de aplicação busca dados necessários pelas portas de saída.
-5. O serviço cria ou altera o agregado `Order` usando `order-domain-core`.
-6. O domínio valida as invariantes. Uma violação gera `OrderDomainException`, sem depender de HTTP ou infraestrutura.
-7. O serviço solicita a persistência pela porta de saída.
-8. `order-data-access` executa a operação no banco e converte o resultado.
-9. Se existir um evento, o serviço solicita sua publicação por outra porta de saída.
-10. `order-messaging` publica o evento no broker.
-11. O resultado volta ao controller, que o converte em resposta HTTP.
+### 5.1. A porta de entrada: `OrderApplicationService`
+
+```java
+public interface OrderApplicationService {
+    CreateOrderResponse createOrder(@Valid CreateOrderCommand createOrderCommand);
+    TrackOrderResponse trackOrder(@Valid TrackOrderQuery trackOrderQuery);
+}
+```
+
+É essa interface que o futuro `@RestController` do módulo `order-application` vai chamar. Implementada por `OrderApplicationServiceImpl`, que só delega para dois "handlers":
+
+```java
+@Service @Validated @Slf4j @RequiredArgsConstructor
+class OrderApplicationServiceImpl implements OrderApplicationService {
+    private final OrderCreateCommandHandler orderCreateCommandHandler;
+    private final OrderTrackCommandHandler orderTrackCommandHandler;
+
+    public CreateOrderResponse createOrder(CreateOrderCommand createOrderCommand) {
+        return orderCreateCommandHandler.createOrder(createOrderCommand);
+    }
+    public TrackOrderResponse trackOrder(TrackOrderQuery trackOrderQuery) {
+        return orderTrackCommandHandler.trackOrder(trackOrderQuery);
+    }
+}
+```
+
+O `@Validated` + `@Valid` nos parâmetros ativa a validação Bean Validation (`@NotNull` etc.) dos DTOs **antes** de qualquer lógica rodar.
+
+### 5.2. Os DTOs — e a ligação direta com o seu print do Postman
+
+O JSON que você mandou é exatamente a forma serializada de `CreateOrderCommand` (`.../dto/create/CreateOrderCommand.java`):
+
+```json
+{
+  "customerId": "d215b5f8-0249-4dc5-89a3-51fd148cfb41",
+  "restaurantId": "d215b5f8-0249-4dc5-89a3-51fd148cfb45",
+  "address": { "street": "street_1", "postalCode": "1000AB", "city": "Amsterdam" },
+  "price": 50.00,
+  "items": [
+    { "productId": "d215b5f8-0249-4dc5-89a3-51fd148cfb48", "quantity": 1, "price": 50.00, "subTotal": 50.00 }
+  ]
+}
+```
+
+```java
+@Getter @Builder @AllArgsConstructor
+public class CreateOrderCommand {
+    @NotNull private final UUID customerId;
+    @NotNull private final UUID restaurantId;
+    @NotNull private final BigDecimal price;
+    @NotNull private final List<OrderItem> items;   // dto.create.OrderItem, não entity.OrderItem!
+    @NotNull private final OrderAddress address;
+}
+```
+
+Note que existe um `dto.create.OrderItem` (campos "crus": `productId`, `quantity`, `price`, `subTotal`, todos em tipos primitivos/`UUID`/`BigDecimal`) **separado** do `entity.OrderItem` do domínio (que usa Value Objects como `Money` e `ProductId`). Isso é intencional: **o domínio nunca deveria receber tipos "de borda" (`UUID`, `BigDecimal` cru) diretamente** — quem faz essa tradução é o `OrderDataMapper` (seção 5.3).
+
+Hoje, como `order-application` (o controller REST) ainda não existe, é exatamente esse `CreateOrderCommand` que um teste (ou, futuramente, o controller) monta manualmente para simular a requisição do Postman.
+
+### 5.3. `OrderDataMapper` — a fronteira de tradução
+
+```java
+public Order createOrderCommandToOrder(CreateOrderCommand createOrderCommand) {
+    return Order.Builder.builder()
+            .customerId(new CustomerId(createOrderCommand.getCustomerId()))
+            .restaurantId(new RestaurantId(createOrderCommand.getRestaurantId()))
+            .deliveryAddress(orderAddressToStreetAddress(createOrderCommand.getAddress()))
+            .price(new Money(createOrderCommand.getPrice()))
+            .items(orderItemsToOrderItemEntities(createOrderCommand.getItems()))
+            .build();
+}
+```
+
+Esse método converte o "mundo externo" (`UUID`, `BigDecimal`) para o "mundo do domínio" (`CustomerId`, `Money`...). Há também `createOrderCommandToRestaurant(...)`, que monta um `Restaurant` "esqueleto" só com o `RestaurantId` e a lista de `Product` (só com os IDs pedidos) — esse objeto serve de **filtro de consulta** para `RestaurantRepository.findRestaurantInformation(restaurant)`.
+
+No sentido inverso, `orderToCreateOrderResponse(order, message)` e `orderToTrackOrderResponse(order)` convertem o agregado de volta para DTOs de resposta.
+
+> Nota de leitura de código: repare no typo `orderTackingId` (faltou o "r" de "Tracking") em `CreateOrderResponse`, `TrackOrderQuery` e `TrackOrderResponse` — não é um bug funcional, é só um erro de digitação que se propagou; útil saber para não se confundir ao procurar por "trackingId" no código.
+
+### 5.4. `OrderCreateHelper` — o orquestrador do caso de uso "criar pedido"
+
+Este é o coração da camada de aplicação:
+
+```java
+@Transactional
+public OrderCreatedEvent persistOrder(CreateOrderCommand createOrderCommand) {
+    checkCustomer(createOrderCommand.getCustomerId());
+    Restaurant restaurant = checkRestaurant(createOrderCommand);
+    Order order = orderDataMapper.createOrderCommandToOrder(createOrderCommand);
+    OrderCreatedEvent orderCreatedEvent = orderDomainService.validateAndInitiateOrder(order, restaurant);
+    saveOrder(order);
+    return orderCreatedEvent;
+}
+```
+
+Passo a passo, aplicado ao seu print:
+
+1. **`checkCustomer(customerId)`** → chama a porta `CustomerRepository.findCustomer(UUID)`. Se vazio, lança `OrderDomainException("Could not find customer with customer id: ...")`. *(Hoje sem implementação real — quem vai implementar essa porta é `order-data-access`, provavelmente consultando uma tabela local de clientes replicada de outro serviço, ou chamando o customer-service.)*
+2. **`checkRestaurant(command)`** → converte o comando num `Restaurant` "de consulta" e chama `RestaurantRepository.findRestaurantInformation(restaurant)`. Se vazio, lança exceção. O `Restaurant` retornado deveria vir com `active=true/false` e os `Product` reais (nome/preço confirmados).
+3. **`orderDataMapper.createOrderCommandToOrder(command)`** → monta o agregado `Order` (ainda sem ID, sem status — puro "rascunho").
+4. **`orderDomainService.validateAndInitiateOrder(order, restaurant)`** → aqui entra toda a regra de negócio da seção 4.5: valida se o restaurante está ativo, corrige preços dos itens com base no restaurante, valida o total, inicializa o pedido (gera IDs, `PENDING`) e devolve o `OrderCreatedEvent`.
+5. **`saveOrder(order)`** → chama a porta `OrderRepository.save(order)`. Se retornar `null`, lança exceção (`order-data-access` ainda não implementa isso).
+6. Retorna o evento para quem chamou.
+
+Tudo isso dentro de `@Transactional` — a intenção é que a checagem de cliente/restaurante e a gravação do pedido aconteçam **atomicamente** (quando `order-data-access` existir com um `DataSource` real).
+
+### 5.5. `OrderCreateCommandHandler` — o "caso de uso" exposto
+
+```java
+public CreateOrderResponse createOrder(CreateOrderCommand createOrderCommand) {
+    OrderCreatedEvent orderCreatedEvent = orderCreateHelper.persistOrder(createOrderCommand);
+    orderCreatedPaymentRequestMessagePublisher.publish(orderCreatedEvent);
+    return orderDataMapper.orderToCreateOrderResponse(orderCreatedEvent.getOrder(), "Order created successfully");
+}
+```
+
+Depois que o pedido foi validado e persistido, o handler **publica o evento** `OrderCreatedEvent` na porta de saída `OrderCreatedPaymentRequestMessagePublisher` — isto é, "avisa" (futuramente, via Kafka) o **serviço de pagamento** que existe um novo pedido pendente de cobrança. Isso é o início de uma **SAGA coreografada**: order-service não chama payment-service diretamente (não é uma chamada síncrona/REST), ele publica um evento e segue seu fluxo; quem reage é o outro serviço, de forma assíncrona.
+
+Depois, o handler devolve um `CreateOrderResponse` — que seria serializado como o **corpo da resposta HTTP** do seu `POST /orders`, contendo `orderTackingId`, `orderStatus` (`PENDING`) e uma mensagem.
+
+### 5.6. Rastreamento: `OrderTrackCommandHandler`
+
+Caso de uso mais simples — só leitura (`@Transactional(readOnly = true)`):
+
+```java
+Optional<Order> orderResult = orderRepository.findByTrackingId(new TrackingId(trackOrderQuery.getOrderTackingId()));
+if (orderResult.isEmpty()) throw new OrderNotFoundException(...);
+return orderDataMapper.orderToTrackOrderResponse(orderResult.get());
+```
+
+Seria o backend de um futuro `GET /orders/{trackingId}`.
+
+### 5.7. As portas de saída de mensageria (SAGA de pedidos)
+
+```java
+public interface OrderCreatedPaymentRequestMessagePublisher extends DomainEventPublisher<OrderCreatedEvent> {}
+public interface OrderCancelledPaymentRequestMessagePublisher extends DomainEventPublisher<OrderCancelledEvent> {}
+public interface OrderPaidRestaurantRequestMessagePublisher extends DomainEventPublisher<OrderPaidEvent> {}
+```
+
+Cada uma representa um ponto de saída da SAGA:
+
+- Pedido criado → pede pagamento (`OrderCreatedPaymentRequestMessagePublisher`).
+- Pedido pago → pede aprovação do restaurante (`OrderPaidRestaurantRequestMessagePublisher`).
+- Pedido cancelado → pede estorno do pagamento (`OrderCancelledPaymentRequestMessagePublisher`).
+
+### 5.8. As portas de entrada de mensageria (respostas da SAGA)
+
+```java
+public interface PaymentResponseMessageListener {
+    void paymentCompleted(PaymentResponse paymentResponse);
+    void paymentCancelled(PaymentResponse paymentResponse);
+}
+public interface RestaurantApprovalResponseListener {
+    void orderApproved(RestaurantApprovalResponse restaurantApprovalResponse);
+    void orderRejected(RestaurantApprovalResponse restaurantApprovalResponse);
+}
+```
+
+Já existem as implementações `PaymentResponseMessageListenerImpl` e `RestaurantApprovalResponseListenerImpl` (anotadas `@Service`), mas os métodos ainda estão **vazios** — são o próximo passo natural do curso: quando o serviço de pagamento (via Kafka) responder "paguei" ou "falhou", esse listener deve chamar `orderDomainService.payOrder(order)` ou `cancelOrderPayment(order, mensagens)`, e persistir o novo estado via `OrderRepository`.
+
+---
+
+## 6. O quadro geral: como isso se encaixaria numa SAGA completa
+
+Mesmo sem os outros microsserviços existirem neste repositório, dá para entender a intenção pelo desenho das portas:
 
 ```text
-HTTP
- │
- ▼
-order-application  (DTO -> comando)
- │
- ▼
-porta de entrada
- │
- ▼
-order-application-service
- │
- ├──> order-domain-core       (regras do pedido)
- ├──> porta de persistência ──> order-data-access
- └──> porta de mensageria ────> order-messaging
-
-resultado -> order-application (resultado -> DTO) -> HTTP response
+ Cliente                order-service                 payment-service        restaurant-service
+   │  POST /orders            │                              │                      │
+   ├─────────────────────────►│                              │                      │
+   │                          │ valida cliente/restaurante    │                      │
+   │                          │ cria Order (PENDING)          │                      │
+   │                          │ salva no banco                │                      │
+   │  201 (PENDING)           │                              │                      │
+   │◄─────────────────────────┤                              │                      │
+   │                          │  evento OrderCreated (Kafka) ─►│                      │
+   │                          │                              │ processa pagamento    │
+   │                          │◄─── PaymentResponse (Kafka) ──┤                      │
+   │                          │ Order.pay() -> PAID           │                      │
+   │                          │  evento OrderPaid (Kafka) ─────┼─────────────────────►│
+   │                          │                              │           restaurante avalia
+   │                          │◄────────── RestaurantApprovalResponse (Kafka) ────────┤
+   │                          │ Order.approve() -> APPROVED   │                      │
 ```
+
+Esse é o padrão **SAGA coreografada**: nenhum serviço chama o outro diretamente via HTTP; todos reagem a eventos via Kafka. Se o pagamento falhar, o fluxo é revertido chamando `cancelOrderPayment`/`cancelOrder`, voltando o pedido para `CANCELLING`/`CANCELLED` — por isso o agregado `Order` já tem esses métodos prontos, mesmo sem o Kafka existir ainda.
 
 ---
 
-## Problemas conhecidos
+## 7. Glossário DDD aplicado a este código
 
-### 1. `common/pom.xml` não declara `<packaging>pom</packaging>`
-
-O arquivo `@/Users/joaoadsistemas/Documents/GitHub/food-ordering-system/common/pom.xml` é um projeto agregador (possui `<modules>`), mas está faltando a declaração `<packaging>pom</packaging>`. Isso faz com que o Maven rejeite o build com o erro:
-
-```text
-'packaging' with value 'jar' is invalid. Aggregator projects require 'pom' as packaging.
-```
-
-**Correção indicada:** adicionar `<packaging>pom</packaging>` logo após `<modelVersion>4.0.0</modelVersion>` em `common/pom.xml`.
-
-### 2. Módulos externos ainda estão vazios
-
-`order-application-service`, `order-application`, `order-data-access`, `order-messaging` e `order-container` não possuem código de produção. Apenas os templates gerados por archetype estão presentes.
-
-### 3. Não há testes automatizados
-
-Não existem testes unitários para o domínio nem testes de integração. Apenas arquivos `AppTest.java` de archetype estão presentes.
-
-### 4. Transições de status do pedido ainda não existem
-
-O enum `OrderStatus` já define os estados (`PENDING`, `PAID`, `APPROVED`, `CANCELLING`, `CANCELLED`), mas a classe `Order` ainda não possui métodos como `pay()`, `approve()` ou `cancel()`. Apenas a criação e a validação inicial estão implementadas.
-
-### 5. `DomainEvent` é uma interface vazia
-
-A interface `@/Users/joaoadsistemas/Documents/GitHub/food-ordering-system/common/common-domain/src/main/java/com/food/ordering/system/domain/event/DomainEvent.java` ainda não possui métodos. Eventos concretos como `OrderCreatedEvent` ou `OrderPaidEvent` ainda não foram criados.
+| Conceito DDD | Classe(s) neste projeto |
+|---|---|
+| Aggregate Root | `Order`, `Restaurant`, `Customer` |
+| Entity (não-raiz) | `OrderItem`, `Product` |
+| Value Object | `Money`, `StreetAddress`, `TrackingId`, `OrderItemId`, `CustomerId`, `OrderId`, `RestaurantId`, `ProductId` |
+| Domain Event | `OrderCreatedEvent`, `OrderPaidEvent`, `OrderCancelledEvent` |
+| Domain Service | `OrderDomainService` / `OrderDomainServiceImpl` |
+| Domain Exception | `OrderDomainException`, `OrderNotFoundException` |
+| Application Service (porta de entrada) | `OrderApplicationService` |
+| Use case handler (orquestração) | `OrderCreateCommandHandler`, `OrderCreateHelper`, `OrderTrackCommandHandler` |
+| Repository (porta de saída) | `OrderRepository`, `CustomerRepository`, `RestaurantRepository` |
+| Publisher (porta de saída de mensageria) | `OrderCreatedPaymentRequestMessagePublisher`, `OrderCancelledPaymentRequestMessagePublisher`, `OrderPaidRestaurantRequestMessagePublisher` |
+| Listener (porta de entrada de mensageria) | `PaymentResponseMessageListener`, `RestaurantApprovalResponseListener` |
+| Anticorruption / DTO Mapper | `OrderDataMapper` |
 
 ---
 
-## Executar o build
-
-Na raiz do projeto:
+## 8. Como compilar hoje
 
 ```bash
 mvn clean verify
 ```
 
-Para compilar apenas o serviço de pedidos e suas dependências:
+O `common/pom.xml` já declara `<packaging>pom</packaging>` corretamente. `order-domain-core` e `order-application-service` compilam e podem ser cobertos por testes unitários (o domínio não depende de Spring/JPA/Kafka, então pode ser testado com JUnit + Mockito puro, sem subir contexto Spring nem banco).
+
+Compilar só o `order-service` e suas dependências:
 
 ```bash
 mvn -pl order-service -am clean verify
 ```
 
-> **Atenção:** o build não passa no momento por causa do problema de `packaging` no `common/pom.xml`. Após corrigir esse ponto, o módulo `order-domain-core` deve compilar, pois seu código não depende de frameworks externos.
-
 ---
 
-## Próximos passos sugeridos
+## 9. Próximos passos naturais (seguindo a lógica do curso)
 
-1. **Corrigir o build** ajustando `common/pom.xml` para usar `<packaging>pom</packaging>`.
-2. **Adicionar testes unitários** para o domínio em `order-domain-core`, cobrindo:
-   - Criação e inicialização válida de um pedido.
-   - Falha quando o preço total não bate com a soma dos itens.
-   - Falha quando o preço de um item não corresponde ao preço do produto.
-   - Falha quando o pedido já foi inicializado.
-3. **Implementar transições de estado** em `Order`: `pay()`, `approve()`, `cancel()` etc.
-4. **Criar eventos de domínio** em `order-domain-core` (por exemplo, `OrderCreatedEvent`, `OrderPaidEvent`).
-5. **Implementar `order-application-service`**:
-   - Definir ports de entrada e saída.
-   - Implementar o caso de uso *CreateOrder*.
-6. **Implementar `order-application`** com controllers REST e DTOs.
-7. **Implementar `order-data-access`** com repositórios JPA.
-8. **Implementar `order-messaging`** para publicar eventos.
-9. **Implementar `order-container`** para ligar tudo via Spring Boot.
-10. **Adicionar testes de integração** com adaptadores falsos (dublês) antes de conectar infraestrutura real.
+1. **Testes unitários** do agregado `Order` e de `OrderDomainServiceImpl` (criação, transições de estado, falhas de validação de preço) — isso pode ser feito **agora**, sem esperar nenhum adaptador.
+2. **`order-data-access`**: entidades JPA + implementação de `OrderRepository`, `CustomerRepository`, `RestaurantRepository`.
+3. **`order-application`**: `@RestController` que recebe exatamente o JSON do seu print, monta um `CreateOrderCommand` e chama `OrderApplicationService.createOrder(...)`, mais um `@ControllerAdvice` para traduzir `OrderDomainException`/`OrderNotFoundException` em respostas HTTP (400/404).
+4. **`order-messaging`**: implementação Kafka das portas de publisher, e os `@KafkaListener` que alimentam `PaymentResponseMessageListenerImpl`/`RestaurantApprovalResponseListenerImpl`.
+5. **`order-container`**: classe `@SpringBootApplication`, `application.yml` com `server.port: 8181`, datasource e configuração do Kafka — só aí o `POST http://localhost:8181/orders` do seu Postman vai efetivamente funcionar de ponta a ponta.
+6. Completar os corpos vazios de `PaymentResponseMessageListenerImpl`/`RestaurantApprovalResponseListenerImpl`, chamando `OrderDomainService.payOrder`/`approveOrder`/`cancelOrderPayment`/`cancelOrder` e persistindo o resultado.
+7. Mais adiante no curso: padrão **Outbox** (para publicar eventos de forma transacional e confiável junto com o `save()` do pedido) e **CQRS** (separar o modelo de escrita do de leitura para consultas/rastreamento).
+
+Bons estudos — e qualquer trecho de código que você quiser destrinchar linha a linha (por exemplo, `Order.validateOrder()` ou o `OrderDataMapper`), é só pedir.

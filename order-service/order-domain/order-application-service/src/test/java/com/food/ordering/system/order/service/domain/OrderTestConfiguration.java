@@ -1,5 +1,6 @@
 package com.food.ordering.system.order.service.domain;
 
+import com.food.ordering.system.order.service.domain.ports.output.ai.order.noteInterpreter.OrderNoteInterpreter;
 import com.food.ordering.system.order.service.domain.ports.output.message.publisher.payment.OrderCancelledPaymentRequestMessagePublisher;
 import com.food.ordering.system.order.service.domain.ports.output.message.publisher.payment.OrderCreatedPaymentRequestMessagePublisher;
 import com.food.ordering.system.order.service.domain.ports.output.message.publisher.restaurantApproval.OrderPaidRestaurantRequestMessagePublisher;
@@ -47,4 +48,7 @@ public class OrderTestConfiguration {
     public OrderDomainService orderDomainService() {
         return new OrderDomainServiceImpl();
     }
+
+    @Bean
+    public OrderNoteInterpreter orderNoteInterpreter() { return Mockito.mock(OrderNoteInterpreter.class); }
 }
