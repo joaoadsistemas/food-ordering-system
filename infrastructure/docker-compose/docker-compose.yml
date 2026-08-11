@@ -1,0 +1,155 @@
+x-kafka-broker: &kafka-broker
+  image: confluentinc/cp-kafka:${KAFKA_VERSION:-7.0.1}
+  environment: &kafka-broker-env
+    KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,LISTENER_LOCAL:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_COMPRESSION_TYPE: producer
+  networks:
+    - food-ordering-system
+  depends_on:
+    zookeeper:
+      condition: service_healthy
+  healthcheck:
+    test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092" ]
+    interval: 10s
+    timeout: 10s
+    retries: 5
+    start_period: 30s
+
+networks:
+  food-ordering-system:
+    driver: bridge
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:${KAFKA_VERSION:-7.0.1}
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_SERVER_ID: 1
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_SERVERS: zookeeper:2888:3888
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
+    volumes:
+      - "./volumes/zookeeper/data:/var/lib/zookeeper/data"
+      - "./volumes/zookeeper/transactions:/var/lib/zookeeper/log"
+    networks:
+      - food-ordering-system
+    healthcheck:
+      test: [ "CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  kafka-broker-1:
+    <<: *kafka-broker
+    hostname: kafka-broker-1
+    ports:
+      - "19092:19092"
+    environment:
+      <<: *kafka-broker-env
+      KAFKA_BROKER_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:9092,LISTENER_LOCAL://localhost:19092
+    volumes:
+      - "./volumes/kafka/broker-1:/var/lib/kafka/data"
+
+  kafka-broker-2:
+    <<: *kafka-broker
+    hostname: kafka-broker-2
+    ports:
+      - "29092:29092"
+    environment:
+      <<: *kafka-broker-env
+      KAFKA_BROKER_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:9092,LISTENER_LOCAL://localhost:29092
+    volumes:
+      - "./volumes/kafka/broker-2:/var/lib/kafka/data"
+
+  kafka-broker-3:
+    <<: *kafka-broker
+    hostname: kafka-broker-3
+    ports:
+      - "39092:39092"
+    environment:
+      <<: *kafka-broker-env
+      KAFKA_BROKER_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:9092,LISTENER_LOCAL://localhost:39092
+    volumes:
+      - "./volumes/kafka/broker-3:/var/lib/kafka/data"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:${KAFKA_VERSION:-7.0.1}
+    hostname: schema-registry
+    depends_on:
+      kafka-broker-1:
+        condition: service_healthy
+      kafka-broker-2:
+        condition: service_healthy
+      kafka-broker-3:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: 'zookeeper:2181'
+      SCHEMA_REGISTRY_LISTENERS: http://schema-registry:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka-broker-1:9092,PLAINTEXT://kafka-broker-2:9092,PLAINTEXT://kafka-broker-3:9092
+      SCHEMA_REGISTRY_DEBUG: 'true'
+    networks:
+      - food-ordering-system
+
+  kafka-manager:
+    image: hlebalbau/kafka-manager:stable
+    restart: always
+    ports:
+      - "9000:9000"
+    environment:
+      ZK_HOSTS: "zookeeper:2181"
+    networks:
+      - food-ordering-system
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+
+  init-kafka:
+    image: confluentinc/cp-kafka:${KAFKA_VERSION:-7.0.1}
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      set -e
+      echo 'Waiting for Kafka...'
+      until kafka-broker-api-versions --bootstrap-server kafka-broker-1:9092 >/dev/null 2>&1; do
+        sleep 1
+      done
+
+      TOPICS='payment-request payment-response restaurant-approval-request restaurant-approval-response customer'
+
+      echo 'Deleting kafka topics'
+      for topic in $$TOPICS; do
+        kafka-topics --bootstrap-server kafka-broker-1:9092 --topic $$topic --delete --if-exists
+      done
+
+      echo 'Creating kafka topics'
+      for topic in $$TOPICS; do
+        kafka-topics --bootstrap-server kafka-broker-1:9092 --create --if-not-exists --topic $$topic --replication-factor 3 --partitions 3
+      done
+
+      echo 'Successfully created the following topics:'
+      kafka-topics --bootstrap-server kafka-broker-1:9092 --list
+      "
+    networks:
+      - food-ordering-system
+    depends_on:
+      kafka-broker-1:
+        condition: service_healthy
+      kafka-broker-2:
+        condition: service_healthy
+      kafka-broker-3:
+        condition: service_healthy
