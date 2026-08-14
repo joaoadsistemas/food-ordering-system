@@ -1,4 +1,4 @@
-package $com.food.ordering.system;
+package com.food.ordering.system;
 
 import junit.framework.Test;
 import junit.framework.TestCase;
