@@ -8,4 +8,7 @@
     </parent>
     <packaging>pom</packaging>
     <artifactId>infrastructure</artifactId>
+    <modules>
+        <module>kafka</module>
+    </modules>
 </project>
