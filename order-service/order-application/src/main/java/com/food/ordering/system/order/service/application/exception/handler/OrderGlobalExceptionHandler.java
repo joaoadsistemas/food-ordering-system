@@ -2,6 +2,7 @@ package com.food.ordering.system.order.service.application.exception.handler;
 
 import com.food.ordering.system.application.handler.ErrorDTO;
 import com.food.ordering.system.application.handler.GlobalExceptionHandler;
+import com.food.ordering.system.order.service.ai.exception.AIOrderNoteInterpreterException;
 import com.food.ordering.system.order.service.domain.exception.OrderDomainException;
 import com.food.ordering.system.order.service.domain.exception.OrderNotFoundException;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +35,17 @@ public class OrderGlobalExceptionHandler extends GlobalExceptionHandler {
         return ErrorDTO.builder()
                 .code(HttpStatus.NOT_FOUND.getReasonPhrase())
                 .message(orderNotFoundException.getMessage())
+                .build();
+    }
+
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    @ExceptionHandler(value = AIOrderNoteInterpreterException.class)
+    @ResponseBody
+    public ErrorDTO handleException(AIOrderNoteInterpreterException aiOrderNoteInterpreterException) {
+        log.error(aiOrderNoteInterpreterException.getMessage(), aiOrderNoteInterpreterException);
+        return ErrorDTO.builder()
+                .code(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message(aiOrderNoteInterpreterException.getMessage())
                 .build();
     }
 }

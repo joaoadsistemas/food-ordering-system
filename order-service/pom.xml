@@ -12,6 +12,7 @@
         <module>order-messaging</module>
         <module>order-container</module>
         <module>order-data-access</module>
+        <module>order-ai</module>
     </modules>
     <modelVersion>4.0.0</modelVersion>
 

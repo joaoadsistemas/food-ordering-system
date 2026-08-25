@@ -31,7 +31,7 @@ public class Order extends AggregateRoot<OrderId> {
         super.setId(new OrderId(UUID.randomUUID()));
         trackingId = new TrackingId(UUID.randomUUID());
         orderStatus = OrderStatus.PENDING;
-        failureMessages = new ArrayList<>();
+        initializeOrderItems();
     }
 
     private void initializeOrderItems() {
