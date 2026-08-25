@@ -7,13 +7,14 @@ import com.food.ordering.system.order.service.domain.dto.track.TrackOrderRespons
 import com.food.ordering.system.order.service.domain.ports.input.service.OrderApplicationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
 @RestController
-@RequestMapping(value = "/orders", produces = "application/vnd.api.v1.json")
+@RequestMapping(value = "/orders", produces = MediaType.APPLICATION_JSON_VALUE)
 @Slf4j
 @RequiredArgsConstructor
 public class OrderController {
