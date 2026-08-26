@@ -21,6 +21,7 @@
         <module>customer-service</module>
         <module>common</module>
         <module>infrastructure</module>
+        <module>payment-service</module>
     </modules>
 
     <properties>
