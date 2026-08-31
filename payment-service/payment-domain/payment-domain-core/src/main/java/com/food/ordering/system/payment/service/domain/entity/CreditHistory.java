@@ -1,17 +1,16 @@
 package com.food.ordering.system.payment.service.domain.entity;
 
 import com.food.ordering.system.domain.entity.BaseEntity;
-import com.food.ordering.system.domain.valueObject.BaseId;
 import com.food.ordering.system.domain.valueObject.CustomerId;
 import com.food.ordering.system.domain.valueObject.Money;
 import com.food.ordering.system.payment.service.domain.valueObject.CreditHistoryId;
-import com.food.ordering.system.payment.service.domain.valueObject.TransactionalType;
+import com.food.ordering.system.payment.service.domain.valueObject.TransactionType;
 
 public class CreditHistory extends BaseEntity<CreditHistoryId> {
 
     private final CustomerId customerId;
     private final Money amount;
-    private final TransactionalType transactionalType;
+    private final TransactionType transactionType;
 
 
 
@@ -19,7 +18,7 @@ public class CreditHistory extends BaseEntity<CreditHistoryId> {
         setId(builder.creditHistoryId);
         customerId = builder.customerId;
         amount = builder.amount;
-        transactionalType = builder.transactionalType;
+        transactionType = builder.transactionalType;
     }
 
     public CustomerId getCustomerId() {
@@ -30,15 +29,15 @@ public class CreditHistory extends BaseEntity<CreditHistoryId> {
         return amount;
     }
 
-    public TransactionalType getTransactionalType() {
-        return transactionalType;
+    public TransactionType getTransactionType() {
+        return transactionType;
     }
 
     public static final class Builder {
         private CreditHistoryId creditHistoryId;
         private CustomerId customerId;
         private Money amount;
-        private TransactionalType transactionalType;
+        private TransactionType transactionType;
 
         private Builder() {
         }
@@ -62,8 +61,8 @@ public class CreditHistory extends BaseEntity<CreditHistoryId> {
             return this;
         }
 
-        public Builder transactionalType(TransactionalType val) {
-            transactionalType = val;
+        public Builder transactionType(TransactionType val) {
+            transactionType = val;
             return this;
         }
 
